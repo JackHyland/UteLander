@@ -1,149 +1,307 @@
-# Encoding: UTF-8
-
-# Basically, the tutorial game taken to a jump'n'run perspective.
-
-# NOTE THIS PROGRAM IS A STRUCTURED VERSION OF THE ORIGINAL
-# MODIFIED BY M. MITCHELL
-
-# Shows how to
-#  * implement jumping/gravity
-#  * implement scrolling using Window#translate
-#  * implement a simple tile-based map
-#  * load levels from primitive text files
-
-# Some exercises, starting at the real basics:
-#  0) understand the existing code!
-# As shown in the tutorial:
-#  1) change it use Gosu's Z-ordering
-#  2) add gamepad support
-#  3) add a score as in the tutorial game
-#  4) similarly, add sound effects for various events
-# Exploring this game's code and Gosu:
-#  5) make the player wider, so he doesn't fall off edges as easily
-#  6) add background music (check if playing in Window#update to implement
-#     looping)
-#  7) implement parallax scrolling for the star background!
-# Getting tricky:
-#  8) optimize Map#draw so only tiles on screen are drawn (needs modulo, a pen
-#     and paper to figure out)
-#  9) add loading of next level when all gems are collected
-# ...Enemies, a more sophisticated object system, weapons, title and credits
-# screens...
-
 require 'rubygems'
 require 'gosu'
 
-WIDTH, HEIGHT = 640, 480
+WIDTH, HEIGHT = 800, 640
 
 module Tiles
-  Grass = 0
-  Earth = 1
+  Land = 0
 end
 
-# Map class holds and draws tiles and gems.
+module ZOrder
+  BACKGROUND, PLAYER, UI = *0..2
+end
+
+# Map class holds and draws tiles.
 class GameMap
-  attr_accessor :width, :height, :gems, :tile_set, :tiles
+  attr_accessor :width, :height, :tile_set, :tiles
 end
 
 # Player class.
 class Player
-  attr_accessor :x, :y, :dir, :vy, :game_map, :standing, :walk1, :walk2, :jump, :cur_image
+  attr_accessor :x, :y, :rotation, :vy, :vx, :velocityStoredy, :velocityStoredx, :fuel, :score, :id, :reset, :crash, :game_map, :floating, :rocket, :explosion, :cur_image, :angle, :rocketSound, :explosionSound, :landedSound
 end
 
-class Collectiblegem
-  attr_accessor :x, :y, :image
-end
+# scoreboard class
+class ScoreBoard
+  attr_accessor :score, :player
+end 
 
-# Changed Collectiblegem class from OOP to Structured - note
-# change of attrib_reader to attrib_accessor
-
-def setup_gem(image, x, y)
-  gem = Collectiblegem.new()
-  gem.image = image
-  gem.x, gem.y = x, y
-  gem
-end
-
-def draw_gem(gem)
-  # Draw, slowly rotating
-  gem.image.draw_rot(gem.x, gem.y, 0, 25 * Math.sin(Gosu.milliseconds / 133.7))
-end
-
-# Player functions and procedures
-# converted from OOP to Structured
-
-def setup_player(player, game_map, x, y)
+# initialise player settings
+def setup_player(player, game_map)
   player = Player.new()
-  player.x, player.y = x, y
-  player.dir = :left
-  player.vy = 0 # Vertical velocity
+  player.reset = 0
+  player.velocityStoredy = 0 # stored VX for landing values
+  player.velocityStoredx = 0 # stored VX for landing values
+  player.crash = false 
+  player.id = 0 # player ID for scoreboard
+  # sounds for player
+  player.rocketSound = Gosu::Song.new("media/rocket.mp3")
+  player.explosionSound = Gosu::Song.new("media/explosionLand.wav")
+  player.landedSound = Gosu::Song.new("media/landed.wav")
   player.game_map = game_map
   # Load all animation frames
-  player.standing, player.walk1, player.walk2, player.jump = Gosu::Image.load_tiles("media/cptn_ruby.png", 50, 50)
+  player.floating, player.rocket, player.explosion = Gosu::Image.load_tiles("media/utePicture.png", 50, 20)
   # This always points to the frame that is currently drawn.
   # This is set in update, and used in draw.
-  player.cur_image = player.standing
+  player.cur_image = player.floating
   player
 end
 
+def reset_player(player, x, y, isReset)
+  player.x, player.y = x, y # player co-ordinated
+  player.rotation = :NIL # player rotation (left or right or nil)
+  
+  player.angle = 0 # Player angle
+  player.vy = 0.0 # Vertical velocity
+  player.vx = 0.0 # Vertical velocity
+  
+  # isReset is true when user is
+  # - reseting the game 
+  # - or when user is coming from another gameState to gameState 1
+  # isReset is false when reseting player once they have crashed or landed
+  if isReset == true
+    player.id += 1
+    player.fuel = 100
+    player.score = 0 # Player Score
+  end
+
+  # reset player
+  player.reset = 0
+  player.crash = false
+  player
+end 
+
+# draws player and rotates player
 def draw_player(player)
-  # Flip vertically when facing to the left.
-  if player.dir == :left
-    offs_x = -25
-    factor = 1.0
-  else
-    offs_x = 25
-    factor = -1.0
+  # controls left and right direction of player
+  if player.rotation == :left
+    angle = 1
+    player.rotation = :NIL
+  elsif player.rotation == :right
+    angle = -1
+    player.rotation = :NIL
+  else 
+    angle = 0
   end
-  player.cur_image.draw(player.x + offs_x, player.y - 49, 0, factor, 1.0)
+  offs_x = 25
+  factor = -1.0
+  # player.angle is incremented to be the angle
+  player.cur_image.draw_rot(player.x, player.y - 12, 0, player.angle += angle, center_x = 0.5, center_y = 0.5, factor)
 end
 
+# Could the object be placed at x + offs_x/y + offs_y without being stuck?
+def would_fit(player, offs_x, offs_y)
+  # Check at the center/top and center/bottom for game_map collisions
+  not solid?(player.game_map, player.x + offs_x, player.y + offs_y) and
+    not solid?(player.game_map, player.x + offs_x, player.y + offs_y - 45)
+end
 
-def update_player(player, move_x)
-  if (move_x == 0)
-    player.cur_image = player.standing
-  else
-    player.cur_image = (Gosu.milliseconds / 175 % 2 == 0) ? player.walk1 : player.walk2
+# set the current state of the image 
+def imageStateCurrent(player, imageState)
+  if player.crash == true
+    player.cur_image = player.explosion
+  elsif imageState == 0
+    player.cur_image = player.rocket
+  elsif imageState == 1
+    player.cur_image = player.floating
   end
-  if (player.vy < 0)
-    player.cur_image = player.jump
-  end 
+end
 
+# check that area landed is correct
+def area_landed(player)
+  # if correct play landed sound else explosion
+  if (player.x > 48 and player.x < 98) and (player.y > 345 and player.y < 350)
+    player.score += 250
+    player.landedSound.play
+  elsif (player.x > 320 and player.x < 420) and (player.y > 495 and player.y < 500)
+    player.score += 50
+    player.landedSound.play
+  elsif (player.x > 500 and player.x < 600) and (player.y > 595 and player.y < 600)
+    player.score += 150
+    player.landedSound.play
+  elsif (player.x > 650 and player.x < 750) and (player.y > 395 and player.y < 400)
+    player.score += 50
+    player.landedSound.play
+  elsif (player.x > 1000 and player.x < 1050) and (player.y > 595 and player.y < 600)
+    player.score += 250
+    player.landedSound.play
+  else 
+    player.crash = true
+    player.explosionSound.play
+  end
+end
+
+def landed(player)
+  # reset < 1 prevents system from repeatedly crashing or landing, this way it will only go through this function once
+  if player.reset < 1
+    # check that all criteria of landing is correct (i.e speed of landing is safe)
+    if (player.velocityStoredy < 1.5 && (player.velocityStoredx > -0.5 && 0.5 > player.velocityStoredx) && (player.angle > -10 && 10 > player.angle))
+      area_landed(player)
+    else
+      player.crash = true
+      player.explosionSound.play
+    end
+    player.reset = 1
+  end
+end
+
+# updates players image, rotation, velocity and landing status
+def update_player(player, rotating, imageState)
+  # set image state 
+  imageStateCurrent(player, imageState)
+
+  # Directional walking, horizontal movement
+  if rotating > 0
+    player.rotation = :right
+  end
+  if rotating < 0
+    player.rotation = :left
+  end
+  
   # Acceleration/gravity
-  # By adding 1 each frame, and (ideally) adding vy to y, the player's
-  # jumping curve will be the parabole we want it to be.
-  player.vy += 1
+  # By adding 0.01 each frame, players velocity will increase in the y direction
+  player.vy += 0.01
+
+  # Vertical movement and horizontal movement
+  # if falling else rising
+  if player.vy > 0    
+    # check if impact
+    if would_fit(player, 0, 1) && would_fit(player, 1, 0) && would_fit(player, -1, 0)
+      player.y += player.vy # exponetial falling of the players y axis
+      player.x = player.x + player.vx # constant x velocity
+      player.velocityStoredy = player.vy # stored velocities y and x for landing pads 
+      player.velocityStoredx = player.vx
+    else 
+      # impact means landed or crashed and velocity y is set to 0
+      player.vy = 0
+    end 
+  else 
+    if would_fit(player, 0, -1) && would_fit(player, 1, 0) && would_fit(player, -1, 0)
+      player.y += player.vy + 0.1 # exponetial rising of the players y axis
+      player.x += player.vx  # exponential x velocity (rocket would be on)
+    else 
+      player.vy = 0
+    end 
+  end
+
+  # if impact then call landed function
+  if player.vy == 0
+    landed(player)
+  end 
 end
 
-def try_to_jump(player)
-  if solid?(player.game_map, player.x, player.y + 1)
-    player.vy = -20
+# player is using rocket function
+def player_rocket(player)
+  if player.fuel > 0
+    # angle needs to be between 0-180 (90 degrees would be directly north)
+    angle = player.angle + 90 
+    x = Math.cos(angle * (Math::PI/180)) # find x axis (adjacent)
+    y = Math.sin(angle * (Math::PI/180)) # find x axis (opposite)
+    # store x and y and divide it by 20 to make it a smaller value 
+    # 20 can be changed to change acceleration of player 
+    player.vx += -x / 20 
+    player.vy += -y / 20
+    player.fuel -= 1
+    player.rocketSound.play
   end
 end
 
-def collect_gems(player, gems)
-  # Same as in the tutorial game.
-  gems.reject! do |c|
-    (c.x - player.x).abs < 50 and (c.y - player.y).abs < 50
+# display score
+def display_current_score(font, player, camera_x)
+  x = player.vx * 100
+  y = player.vy * 100 
+  font.draw("Press 0 - menu", camera_x + 250, 10, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("Press 1 - Restart", camera_x + 400, 10, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("Fuel: #{player.fuel}", camera_x + 10, 10, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("Current Score: #{player.score}", camera_x + 10, 30, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("Current User ID: #{player.id}", camera_x + 10, 50, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("x Velocity: #{x.round(1)}", camera_x + 10, 70, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("y Velocity: #{y.round(1)}", camera_x + 10, 90, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("Ute angle: #{player.angle}", camera_x + 10, 110, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+end
+
+# display result after crash or land
+def display_result(font, player, camera_x, camera_y)
+  if player.crash == false
+    font.draw("LANDED", camera_x + 300, camera_y + 200, ZOrder::UI, 2.5, 2.5, Gosu::Color::YELLOW)
+    font.draw("Total Score is: #{player.score} ", camera_x + 280, camera_y + 250, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
+  else
+    font.draw("CRASHED", camera_x + 300, camera_y + 200, ZOrder::UI, 2.5, 2.5, Gosu::Color::YELLOW)
+    font.draw("Total Score is: #{player.score} ", camera_x + 280, camera_y + 250, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
+  end
+  if player.fuel == 0
+    font.draw("Game Finished ", camera_x + 285, camera_y + 290, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
+  end 
+end 
+
+# display menu 
+def display_menu(font)
+  font.draw("UTE LANDER", 235, 200, ZOrder::UI, 3.0, 3.0, Gosu::Color::YELLOW)
+  font.draw("press a number to continue", 240, 260, ZOrder::UI, 1.5, 1.5, Gosu::Color::YELLOW)
+  font.draw("1. Play", 335, 290, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("2. Highscores", 335, 310, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("3. Instructions", 335, 330, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("4. To Quit Game", 335, 350, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+end 
+
+# display scoreboard in highscores
+def display_scoreboard(font, scoreBoard)
+  font.draw("Press 0 - menu", 250, 10, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("Press 1 - Play", 400, 10, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("High Scores", 295, 160, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
+  if scoreBoard.length == 0
+    font.draw("These are no scores to display", 275, 210, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  else
+    font.draw("Player ID", 305, 210, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+    font.draw("Score", 425, 210, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+    i = 0
+    y = 0
+    # print out array of scores
+    while i < scoreBoard.length
+      font.draw(scoreBoard[i].player, 305, 230 + y, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+      font.draw(scoreBoard[i].score, 425, 230 + y, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+      i += 1
+      y += 20
+    end
   end
 end
 
+# display instructions
+def display_instructions(font, instructions)
+  font.draw("Press 0 - menu", 250, 10, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("Press 1 - Play", 400, 10, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("Instructions", 295, 130, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
+  font.draw("Player must land on one of the coloured pads", 210, 180, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  instructions.draw 210, 205, 0
+  font.draw("For a player to land you need to", 250, 275, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("- Players y velocity must be less than 150 to land", 120, 300, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("- Players x velocity must be less than 50 and greater than -50 to land", 120, 320, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("- Players angle must be less than 10 and greater than -10 to land", 120, 340, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+  font.draw("The game ends when your fuel is 0 and you land", 190, 370, ZOrder::UI, 1.0, 1.0, Gosu::Color::YELLOW)
+end 
+
+# store current player data (id and score)
+def player_data(player)
+  player_score = player.score
+  player_id = player.id 
+  players = ScoreBoard.new()
+  players.player = player_id
+  players.score = player_score
+  players
+end
+
+# store current player results into a array
+def store_result(player, scoreBoardDatas)  
+  scoreBoardData = player_data(player)
+  scoreBoardDatas << scoreBoardData
+  scoreBoardDatas
+end 
 
 # game_map functions and procedures
-# converted from OOP to Structured
-# Note: I change the name to GameMap as the Map here is NOT the same
-# one as in the standard Ruby API, which could be confusing.
-
-#def setup_game_map(filename)
-=begin
+def setup_game_map(filename)
   game_map = GameMap.new
-
   # Load 60x60 tiles, 5px overlap in all four directions.
-
-  game_map.tile_set = Gosu::Image.load_tiles("media/tileset.png", 60, 60, :tileable => true)
-
-  gem_img = Gosu::Image.new("media/gem.png")
-  game_map.gems = []
+  game_map.tile_set = Gosu::Image.load_tiles("media/Land.png", 60, 60, :tileable => true)
 
   lines = File.readlines(filename).map { |line| line.chomp }
   game_map.height = lines.size
@@ -152,12 +310,7 @@ end
     Array.new(game_map.height) do |y|
       case lines[y][x, 1]
       when '"'
-        Tiles::Grass
-      when '#'
-        Tiles::Earth
-      when 'x'
-        game_map.gems.push(setup_gem(gem_img, x * 50 + 25, y * 50 + 25))
-        nil
+        Tiles::Land
       else
         nil
       end
@@ -165,57 +318,130 @@ end
   end
   game_map
 end
-=end
 
-#def draw_game_map(game_map)
-def draw_game_map()
-  Gosu.draw_rect(0, 0, 800, 600, Gosu::Color::RED, 0, mode=:default)
+def draw_game_map(game_map)
+  # Very primitive drawing function:
+  # Draws all the tiles, some off-screen, some on-screen.
+  game_map.height.times do |y|
+    game_map.width.times do |x|
+      tile = game_map.tiles[x][y]
+      if tile
+        # Draw the tile with an offset (tile images have some overlap)
+        # Scrolling is implemented here just as in the game objects.
+        game_map.tile_set[tile].draw(x * 50 - 5, y * 50 - 5, 0)
+      end
+    end
+  end
+  #landing pads for game
+  Gosu.draw_rect(48, 345, 50, 5, Gosu::Color::GREEN, ZOrder::PLAYER, mode=:default)
+  Gosu.draw_rect(320, 495, 100, 5, Gosu::Color::YELLOW, ZOrder::PLAYER, mode=:default)
+  Gosu.draw_rect(500, 595, 100, 5, Gosu::Color::BLUE, ZOrder::PLAYER, mode=:default)
+  Gosu.draw_rect(650, 395, 100, 5, Gosu::Color::YELLOW, ZOrder::PLAYER, mode=:default)
+  Gosu.draw_rect(1000, 595, 50, 5, Gosu::Color::GREEN, ZOrder::PLAYER, mode=:default)
 end
 
+# Solid at a given pixel position?
+def solid?(game_map, x, y)
+  y < 0 || game_map.tiles[x / 50][y / 50]
+end
 
-
-class CptnRuby < (Example rescue Gosu::Window)
+class UteLander < Gosu::Window
   def initialize
     super WIDTH, HEIGHT
 
-    self.caption = "Cptn. Ruby"
-
+    self.caption = "Ute Lander"
+    @gameState = 0 # state for game, menu is 0 
+    @scoreBoard = Array.new() # array for user highscores data
+    @Instructions = Gosu::Image.new("media/instructionsLand.png", :tileable => true)
     @sky = Gosu::Image.new("media/space.png", :tileable => true)
-    #@game_map = setup_game_map("media/cptn_ruby_map.txt")
-    @cptn = setup_player(@cptn, @game_map, 400, 100)
+    @game_map = setup_game_map("media/uteLanderMap.txt")
+    @ute = setup_player(@ute, @game_map)
     # The scrolling position is stored as top left corner of the screen.
     @camera_x = @camera_y = 0
+    @font = Gosu::Font.new(20)
   end
 
   def update
-    move_x = 0
-    move_x -= 5 if Gosu.button_down? Gosu::KB_LEFT
-    move_x += 5 if Gosu.button_down? Gosu::KB_RIGHT
-    update_player(@cptn, move_x)
- 
+    # only run game when gameState == 1, else its menu pages
+    if @gameState == 1
+      # detect it rotating
+      rotating = 0
+      rotating -= 5 if Gosu.button_down? Gosu::KB_LEFT
+      rotating += 5 if Gosu.button_down? Gosu::KB_RIGHT
 
+      #detect if rockets are used
+      if Gosu.button_down? Gosu::KB_UP 
+        player_rocket(@ute)
+        imageState = 0 # set image for rocket
+      else
+        @ute.rocketSound.stop
+        imageState = 1 # set image for floating
+      end
+      
+      # if fuel and reset are true, then go back to main menu
+      # else reset back to position
+      # 150 gives the game some time to wait so user can read, this can be shorted or extended 
+      # @ute.reset is incremented in def draw
+      if @ute.fuel == 0 && @ute.reset == 150      
+        store_result(@ute, @scoreBoard) 
+        @gameState = 0 # main menu
+      elsif @ute.reset == 150
+        @ute.reset = 0    
+        reset_player(@ute, 400, 100, false)
+      end 
+
+      update_player(@ute, rotating, imageState)
+      # Scrolling follows player
+      @camera_x = [[@ute.x - WIDTH / 2, 0].max, @game_map.width * 50 - WIDTH].min
+      @camera_y = [[@ute.y - HEIGHT / 2, 0].max, @game_map.height * 50 - HEIGHT].min
+    end
   end
 
   def draw
-    @sky.draw 0, 0, 0
+    # background
+    @sky.draw 0, 0, ZOrder::BACKGROUND
 
-      #draw_game_map(@game_map)
-      draw_game_map()
-      draw_player(@cptn)
-    
+    # State of game menu = 0, play = 1, highscores = 2, instructions = 3
+    if @gameState == 0
+      display_menu(@font)
+    elsif @gameState == 1
+      Gosu.translate(-@camera_x, -@camera_y) do
+        draw_game_map(@game_map)
+        draw_player(@ute)
+        display_current_score(@font, @ute, @camera_x)
+      end
+      
+      # displayed results when user has landed or crashed 
+      # is reseted by def update
+      if @ute.reset > 0
+        display_result(@font, @ute, @camera_x, @camera_y)
+        @ute.reset += 1
+      end
+    elsif @gameState == 2
+      display_scoreboard(@font, @scoreBoard)
+    elsif @gameState == 3
+      display_instructions(@font, @Instructions)
+    end 
   end
 
+  # controls the game state 
   def button_down(id)
     case id
-    when Gosu::KB_UP
-      try_to_jump(@cptn)
-    when Gosu::KB_ESCAPE
+    when Gosu::KB_0
+      @gameState = 0
+    when Gosu::KB_1
+      @gameState = 1
+      reset_player(@ute, 400, 100, true)
+    when Gosu::KB_2
+      @gameState = 2
+    when Gosu::KB_3
+      @gameState = 3
+    when Gosu::KB_4
       close
     else
       super
     end
   end
-
 end
 
-CptnRuby.new.show if __FILE__ == $0
+UteLander.new.show if __FILE__ == $0
