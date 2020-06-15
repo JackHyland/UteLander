@@ -3,10 +3,6 @@ require 'gosu'
 
 WIDTH, HEIGHT = 800, 640
 
-module Tiles
-  Land = 0
-end
-
 module ZOrder
   BACKGROUND, PLAYER, UI = *0..2
 end
@@ -30,9 +26,6 @@ end
 def setup_player(player, game_map)
   player = Player.new()
   player.reset = 0
-  player.velocityStoredy = 0 # stored VX for landing values
-  player.velocityStoredx = 0 # stored VX for landing values
-  player.crash = false 
   player.id = 0 # player ID for scoreboard
   # sounds for player
   player.rocketSound = Gosu::Song.new("media/rocket.mp3")
@@ -50,7 +43,8 @@ end
 def reset_player(player, x, y, isReset)
   player.x, player.y = x, y # player co-ordinated
   player.rotation = :NIL # player rotation (left or right or nil)
-  
+  player.velocityStoredy = 0 # stored VX for landing values
+  player.velocityStoredx = 0 # stored VX for landing values 
   player.angle = 0 # Player angle
   player.vy = 0.0 # Vertical velocity
   player.vx = 0.0 # Vertical velocity
@@ -71,18 +65,24 @@ def reset_player(player, x, y, isReset)
   player
 end 
 
-# draws player and rotates player
-def draw_player(player)
+def angle(player)
   # controls left and right direction of player
   if player.rotation == :left
     angle = 1
-    player.rotation = :NIL
+    player.rotation = :NIL # prevents further rotation when user has stop pressing the arrow key
   elsif player.rotation == :right
     angle = -1
     player.rotation = :NIL
   else 
     angle = 0
   end
+  angle
+end
+
+# draws player and rotates player
+def draw_player(player)
+  # find angle
+  angle = angle(player)
   offs_x = 25
   factor = -1.0
   # player.angle is incremented to be the angle
@@ -97,7 +97,7 @@ def would_fit(player, offs_x, offs_y)
 end
 
 # set the current state of the image 
-def imageStateCurrent(player, imageState)
+def image_state_current(player, imageState)
   if player.crash == true
     player.cur_image = player.explosion
   elsif imageState == 0
@@ -145,19 +145,8 @@ def landed(player)
   end
 end
 
-# updates players image, rotation, velocity and landing status
-def update_player(player, rotating, imageState)
-  # set image state 
-  imageStateCurrent(player, imageState)
-
-  # Directional walking, horizontal movement
-  if rotating > 0
-    player.rotation = :right
-  end
-  if rotating < 0
-    player.rotation = :left
-  end
-  
+# the players gravity and speed
+def player_gravity(player)
   # Acceleration/gravity
   # By adding 0.01 each frame, players velocity will increase in the y direction
   player.vy += 0.01
@@ -183,6 +172,22 @@ def update_player(player, rotating, imageState)
       player.vy = 0
     end 
   end
+end
+
+# updates players image, rotation, velocity and landing status
+def update_player(player, rotating, imageState)
+  # set image state 
+  image_state_current(player, imageState)
+
+  # Direction of rotation, sets state of rotation for angle(player)
+  if rotating > 0
+    player.rotation = :right
+  elsif rotating < 0
+    player.rotation = :left
+  end
+
+  # players gravity and velocity
+  player_gravity(player)
 
   # if impact then call landed function
   if player.vy == 0
@@ -221,16 +226,16 @@ def display_current_score(font, player, camera_x)
 end
 
 # display result after crash or land
-def display_result(font, player, camera_x, camera_y)
+def display_result(font, player)
   if player.crash == false
-    font.draw("LANDED", camera_x + 300, camera_y + 200, ZOrder::UI, 2.5, 2.5, Gosu::Color::YELLOW)
-    font.draw("Total Score is: #{player.score} ", camera_x + 280, camera_y + 250, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
+    font.draw("LANDED", 300, 200, ZOrder::UI, 2.5, 2.5, Gosu::Color::YELLOW)
+    font.draw("Total Score is: #{player.score} ", 260, 250, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
   else
-    font.draw("CRASHED", camera_x + 300, camera_y + 200, ZOrder::UI, 2.5, 2.5, Gosu::Color::YELLOW)
-    font.draw("Total Score is: #{player.score} ", camera_x + 280, camera_y + 250, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
+    font.draw("CRASHED", 300, 200, ZOrder::UI, 2.5, 2.5, Gosu::Color::YELLOW)
+    font.draw("Total Score is: #{player.score} ", 260, 250, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
   end
   if player.fuel == 0
-    font.draw("Game Finished ", camera_x + 285, camera_y + 290, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
+    font.draw("Game Finished ", 285, 290, ZOrder::UI, 2.0, 2.0, Gosu::Color::YELLOW)
   end 
 end 
 
@@ -282,11 +287,9 @@ end
 
 # store current player data (id and score)
 def player_data(player)
-  player_score = player.score
-  player_id = player.id 
   players = ScoreBoard.new()
-  players.player = player_id
-  players.score = player_score
+  players.player = player.id
+  players.score = player.score 
   players
 end
 
@@ -300,9 +303,10 @@ end
 # game_map functions and procedures
 def setup_game_map(filename)
   game_map = GameMap.new
+  land = 0 # represent Land
   # Load 60x60 tiles, 5px overlap in all four directions.
   game_map.tile_set = Gosu::Image.load_tiles("media/Land.png", 60, 60, :tileable => true)
-
+  
   lines = File.readlines(filename).map { |line| line.chomp }
   game_map.height = lines.size
   game_map.width = lines[0].size
@@ -310,7 +314,7 @@ def setup_game_map(filename)
     Array.new(game_map.height) do |y|
       case lines[y][x, 1]
       when '"'
-        Tiles::Land
+        land
       else
         nil
       end
@@ -348,12 +352,12 @@ end
 class UteLander < Gosu::Window
   def initialize
     super WIDTH, HEIGHT
-
     self.caption = "Ute Lander"
+
     @gameState = 0 # state for game, menu is 0 
     @scoreBoard = Array.new() # array for user highscores data
     @Instructions = Gosu::Image.new("media/instructionsLand.png", :tileable => true)
-    @sky = Gosu::Image.new("media/space.png", :tileable => true)
+    @background = Gosu::Image.new("media/space.png", :tileable => true)
     @game_map = setup_game_map("media/uteLanderMap.txt")
     @ute = setup_player(@ute, @game_map)
     # The scrolling position is stored as top left corner of the screen.
@@ -361,13 +365,14 @@ class UteLander < Gosu::Window
     @font = Gosu::Font.new(20)
   end
 
+  #constantly cycles and updates game if gameState == 1
   def update
     # only run game when gameState == 1, else its menu pages
     if @gameState == 1
       # detect it rotating
       rotating = 0
-      rotating -= 5 if Gosu.button_down? Gosu::KB_LEFT
-      rotating += 5 if Gosu.button_down? Gosu::KB_RIGHT
+      rotating -= 1 if Gosu.button_down? Gosu::KB_LEFT
+      rotating += 1 if Gosu.button_down? Gosu::KB_RIGHT
 
       #detect if rockets are used
       if Gosu.button_down? Gosu::KB_UP 
@@ -381,14 +386,16 @@ class UteLander < Gosu::Window
       # if fuel and reset are true, then go back to main menu
       # else reset back to position
       # 150 gives the game some time to wait so user can read, this can be shorted or extended 
-      # @ute.reset is incremented in def draw
-      if @ute.fuel == 0 && @ute.reset == 150      
-        store_result(@ute, @scoreBoard) 
-        @gameState = 0 # main menu
-      elsif @ute.reset == 150
-        @ute.reset = 0    
-        reset_player(@ute, 400, 100, false)
-      end 
+      if @ute.reset > 0
+        @ute.reset += 1
+        if @ute.fuel == 0 && @ute.reset == 150      
+          store_result(@ute, @scoreBoard) 
+          @gameState = 0 # main menu
+        elsif @ute.reset == 150
+          @ute.reset = 0    
+          reset_player(@ute, 400, 100, false)
+        end        
+      end
 
       update_player(@ute, rotating, imageState)
       # Scrolling follows player
@@ -397,9 +404,10 @@ class UteLander < Gosu::Window
     end
   end
 
+  # constantly updates image of GOSU
   def draw
     # background
-    @sky.draw 0, 0, ZOrder::BACKGROUND
+    @background.draw 0, 0, ZOrder::BACKGROUND
 
     # State of game menu = 0, play = 1, highscores = 2, instructions = 3
     if @gameState == 0
@@ -412,11 +420,10 @@ class UteLander < Gosu::Window
       end
       
       # displayed results when user has landed or crashed 
-      # is reseted by def update
       if @ute.reset > 0
-        display_result(@font, @ute, @camera_x, @camera_y)
-        @ute.reset += 1
+        display_result(@font, @ute)
       end
+
     elsif @gameState == 2
       display_scoreboard(@font, @scoreBoard)
     elsif @gameState == 3
